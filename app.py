@@ -1,23 +1,57 @@
+import json
 import re
 import joblib
+import numpy as np
 import pandas as pd
 import streamlit as st
 
 st.set_page_config(page_title="SpamShield | NLP Spam Detector",
                    page_icon="🛡️", layout="centered")
 
-@st.cache_resource
-def load_model():
-    return joblib.load("model.pkl"), joblib.load("tfidf.pkl")
+MODEL_FILES = {
+    "Naive Bayes": "model_nb.pkl",
+    "Logistic Regression": "model_lr.pkl",
+    "Linear SVM": "model_svm.pkl",
+}
 
-model, tfidf = load_model()
+@st.cache_resource
+def load_all():
+    models = {name: joblib.load(f) for name, f in MODEL_FILES.items()}
+    return models, joblib.load("tfidf.pkl")
+
+@st.cache_data
+def load_metrics():
+    with open("metrics.json") as f:
+        return json.load(f)
+
+models, tfidf = load_all()
+metrics = load_metrics()
 
 def clean(text):
     return re.sub(r"[^a-z\s]", "", str(text).lower())
 
-def spam_probabilities(texts):
+def spam_probabilities(model, texts):
     vec = tfidf.transform([clean(t) for t in texts])
     return model.predict_proba(vec)[:, 1]
+
+def spam_words(model, vec, top=6):
+    """Message ke wo words jo model ko spam ki taraf dhakel rahe hain."""
+    try:
+        names = tfidf.get_feature_names_out()
+        idx = vec.nonzero()[1]
+        if len(idx) == 0:
+            return []
+        if hasattr(model, "feature_log_prob_"):
+            w = model.feature_log_prob_[1] - model.feature_log_prob_[0]
+        elif hasattr(model, "coef_"):
+            w = model.coef_[0]
+        else:
+            w = np.mean([c.estimator.coef_[0]
+                         for c in model.calibrated_classifiers_], axis=0)
+        pairs = sorted(zip(names[idx], w[idx]), key=lambda x: -x[1])
+        return [word for word, val in pairs if val > 0][:top]
+    except Exception:
+        return []
 
 st.markdown("""
 <style>
@@ -38,13 +72,22 @@ st.markdown("""
 
 # ---------- Sidebar ----------
 with st.sidebar:
-    st.header("About Project")
-    st.write("Email / SMS spam detection using NLP and Machine Learning.")
+    st.header("⚙️ Settings")
+    choice = st.selectbox("Choose model", list(MODEL_FILES.keys()))
+    model = models[choice]
+    m = metrics[choice]
+
+    st.markdown("**Selected model stats**")
+    st.metric("Accuracy", f"{m['accuracy']*100:.2f}%")
+    c1, c2 = st.columns(2)
+    c1.metric("Precision", f"{m['precision']*100:.1f}%")
+    c2.metric("Recall", f"{m['recall']*100:.1f}%")
+    st.metric("F1-score", f"{m['f1']*100:.1f}%")
+
+    st.divider()
     st.markdown("**Pipeline**")
-    st.markdown("1. Text cleaning\n2. TF-IDF features\n3. Naive Bayes classifier")
-    st.markdown("**Model Stats**")
-    st.metric("Accuracy", "96.23%")
-    st.metric("Dataset size", "5,572 messages")
+    st.markdown("1. Text cleaning\n2. TF-IDF features\n3. Classifier")
+    st.caption("Dataset: 5,572 messages")
     st.caption("TE NLP Mini Project | AI & DS Engineering")
 
 # ---------- Header ----------
@@ -55,7 +98,8 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-tab_detect, tab_batch = st.tabs(["🔍 Detect", "📂 Batch Analysis"])
+tab_detect, tab_batch, tab_compare = st.tabs(
+    ["🔍 Detect", "📂 Batch Analysis", "📊 Model Comparison"])
 
 # =====================  TAB 1: DETECT  =====================
 with tab_detect:
@@ -68,9 +112,9 @@ with tab_detect:
     def set_msg(text):
         st.session_state.msg = text
 
-    c1, c2 = st.columns(2)
-    c1.button("🚨 Try a spam example", on_click=set_msg, args=(SPAM_EX,), use_container_width=True)
-    c2.button("✅ Try a normal example", on_click=set_msg, args=(HAM_EX,), use_container_width=True)
+    b1, b2 = st.columns(2)
+    b1.button("🚨 Try a spam example", on_click=set_msg, args=(SPAM_EX,), use_container_width=True)
+    b2.button("✅ Try a normal example", on_click=set_msg, args=(HAM_EX,), use_container_width=True)
 
     msg = st.text_area("Your message", key="msg", height=160,
                        placeholder="Type or paste the message here...")
@@ -88,28 +132,32 @@ with tab_detect:
             if is_spam:
                 st.markdown(f"""<div class="result spam">
                     <h3>🚫 Spam Detected</h3>
-                    <span>Confidence: {confidence*100:.1f}%</span></div>""",
+                    <span>Model: {choice} | Confidence: {confidence*100:.1f}%</span></div>""",
                             unsafe_allow_html=True)
             else:
                 st.markdown(f"""<div class="result ham">
                     <h3>✅ Looks Safe (Not Spam)</h3>
-                    <span>Confidence: {confidence*100:.1f}%</span></div>""",
+                    <span>Model: {choice} | Confidence: {confidence*100:.1f}%</span></div>""",
                             unsafe_allow_html=True)
 
             st.write("")
             st.caption("Spam probability")
             st.progress(spam_prob)
 
-            names = tfidf.get_feature_names_out()
-            idx = vec.nonzero()[1]
-            if len(idx) > 0:
-                diff = model.feature_log_prob_[1][idx] - model.feature_log_prob_[0][idx]
-                spammy = sorted(zip(names[idx], diff), key=lambda x: -x[1])
-                spammy = [w for w, d in spammy if d > 0][:6]
-                if spammy:
-                    st.markdown("**Words that look like spam:**")
-                    st.markdown("".join(f'<span class="chip">{w}</span>' for w in spammy),
-                                unsafe_allow_html=True)
+            words = spam_words(model, vec)
+            if words:
+                st.markdown("**Words that look like spam:**")
+                st.markdown("".join(f'<span class="chip">{w}</span>' for w in words),
+                            unsafe_allow_html=True)
+
+            with st.expander("🆚 Compare all models on this message"):
+                rows = []
+                for name, mdl in models.items():
+                    p = float(mdl.predict_proba(vec)[0][1])
+                    rows.append({"Model": name,
+                                 "Spam probability %": round(p * 100, 1),
+                                 "Prediction": "Spam" if p >= 0.5 else "Not Spam"})
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
             with st.expander("See processed text"):
                 st.code(cleaned)
@@ -117,7 +165,7 @@ with tab_detect:
 # =====================  TAB 2: BATCH  =====================
 with tab_batch:
     st.subheader("Batch Analysis")
-    st.write("Upload a CSV file with many messages and check all of them at once.")
+    st.write(f"Upload a CSV file with many messages. Model in use: **{choice}**")
 
     file = st.file_uploader("Upload CSV file", type=["csv"])
 
@@ -134,7 +182,7 @@ with tab_batch:
         text_col = st.selectbox("Which column contains the messages?", data.columns)
 
         if st.button("🚀 Run Batch Analysis", type="primary", use_container_width=True):
-            probs = spam_probabilities(data[text_col].fillna("").tolist())
+            probs = spam_probabilities(model, data[text_col].fillna("").tolist())
             result = data.copy()
             result["spam_probability_%"] = (probs * 100).round(1)
             result["prediction"] = ["Spam" if p >= 0.5 else "Not Spam" for p in probs]
@@ -145,10 +193,10 @@ with tab_batch:
         total = len(result)
         n_spam = int((result["prediction"] == "Spam").sum())
 
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Total messages", total)
-        m2.metric("Spam", n_spam)
-        m3.metric("Not Spam", total - n_spam)
+        r1, r2, r3 = st.columns(3)
+        r1.metric("Total messages", total)
+        r2.metric("Spam", n_spam)
+        r3.metric("Not Spam", total - n_spam)
 
         st.bar_chart(result["prediction"].value_counts())
         st.dataframe(result, use_container_width=True)
@@ -157,3 +205,28 @@ with tab_batch:
                            result.to_csv(index=False).encode("utf-8"),
                            file_name="spam_analysis_results.csv",
                            mime="text/csv", use_container_width=True)
+
+# =====================  TAB 3: MODEL COMPARISON  =====================
+with tab_compare:
+    st.subheader("Model Comparison")
+    st.write("All three models were trained on the same data and tested on the same 20% held-out messages.")
+
+    comp = pd.DataFrame(metrics).T[["accuracy", "precision", "recall", "f1"]] * 100
+    comp.columns = ["Accuracy %", "Precision %", "Recall %", "F1-score %"]
+    comp = comp.round(2)
+
+    st.dataframe(comp, use_container_width=True)
+    st.bar_chart(comp)
+
+    best = comp["F1-score %"].idxmax()
+    st.success(f"Best F1-score: **{best}** ({comp.loc[best, 'F1-score %']}%)")
+    st.caption("Precision = of all messages flagged spam, how many really were spam. "
+               "Recall = of all real spam, how many were caught. "
+               "F1 balances both, which matters more than accuracy on imbalanced data.")
+
+    st.markdown(f"**Confusion matrix counts: {choice}**")
+    mm = metrics[choice]
+    cm = pd.DataFrame([[mm["tn"], mm["fp"]], [mm["fn"], mm["tp"]]],
+                      index=["Actual Not Spam", "Actual Spam"],
+                      columns=["Predicted Not Spam", "Predicted Spam"])
+    st.dataframe(cm, use_container_width=True)
