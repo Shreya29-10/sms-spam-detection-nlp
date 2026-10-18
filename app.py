@@ -4,6 +4,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import streamlit as st
+from signals import analyze_signals
 
 st.set_page_config(page_title="SpamShield | NLP Spam Detector",
                    page_icon="🛡️", layout="centered")
@@ -143,6 +144,15 @@ with tab_detect:
             st.write("")
             st.caption("Spam probability")
             st.progress(spam_prob)
+            sig_list = analyze_signals(msg)
+            hits = [s for s in sig_list if s["found"]]
+            st.markdown(f"**🚩 Suspicious signals: {len(hits)} of {len(sig_list)} detected**")
+            sc = st.columns(2)
+            for i, s in enumerate(sig_list):
+                icon = "🔴" if s["found"] else "🟢"
+                extra = f" - `{s['detail']}`" if s["found"] and s["detail"] else ""
+                sc[i % 2].markdown(f"{icon} **{s['name']}**{extra}")
+            st.caption("Signals are rule-based hints, separate from the ML model's prediction.")
 
             words = spam_words(model, vec)
             if words:
@@ -186,6 +196,8 @@ with tab_batch:
             result = data.copy()
             result["spam_probability_%"] = (probs * 100).round(1)
             result["prediction"] = ["Spam" if p >= 0.5 else "Not Spam" for p in probs]
+            result["suspicious_signals"] = [sum(s["found"] for s in analyze_signals(t))
+                                            for t in data[text_col].fillna("").tolist()]
             st.session_state["batch_result"] = result
 
     if "batch_result" in st.session_state:
