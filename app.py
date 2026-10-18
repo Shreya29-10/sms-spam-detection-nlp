@@ -5,6 +5,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from signals import analyze_signals
+import os
+from sklearn.feature_extraction.text import CountVectorizer, ENGLISH_STOP_WORDS
 
 st.set_page_config(page_title="SpamShield | NLP Spam Detector",
                    page_icon="🛡️", layout="centered")
@@ -53,7 +55,32 @@ def spam_words(model, vec, top=6):
         return [word for word, val in pairs if val > 0][:top]
     except Exception:
         return []
+@st.cache_data
+def load_dataset():
+    df = pd.read_csv("spam.csv", encoding="latin-1")[["v1", "v2"]]
+    df.columns = ["label", "text"]
+    df["label"] = df["label"].map({"ham": "Not Spam", "spam": "Spam"})
+    df["chars"] = df["text"].str.len()
+    df["words"] = df["text"].str.split().str.len()
+    return df
 
+@st.cache_data
+def top_words(label, n=10):
+    df = load_dataset()
+    texts = df[df["label"] == label]["text"].apply(clean)
+    stop = list(ENGLISH_STOP_WORDS.union({"gt", "lt", "amp", "ll", "ve"}))
+    cv = CountVectorizer(stop_words=stop)
+    counts = cv.fit_transform(texts).sum(axis=0).A1
+    words = cv.get_feature_names_out()
+    return pd.Series(counts, index=words).sort_values(ascending=False).head(n)
+
+def show_words(series, container):
+    d = series.reset_index()
+    d.columns = ["Word", "Count"]
+    container.dataframe(
+        d, hide_index=True, use_container_width=True,
+        column_config={"Count": st.column_config.ProgressColumn(
+            "Count", min_value=0, max_value=int(d["Count"].max()), format="%d")})
 st.markdown("""
 <style>
 #MainMenu, footer, .stDeployButton {visibility: hidden;}
@@ -99,8 +126,8 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-tab_detect, tab_batch, tab_compare = st.tabs(
-    ["🔍 Detect", "📂 Batch Analysis", "📊 Model Comparison"])
+tab_detect, tab_batch, tab_compare, tab_insights = st.tabs(
+    ["🔍 Detect", "📂 Batch Analysis", "📊 Model Comparison", "💡 Insights"])
 
 # =====================  TAB 1: DETECT  =====================
 with tab_detect:
@@ -242,3 +269,60 @@ with tab_compare:
                       index=["Actual Not Spam", "Actual Spam"],
                       columns=["Predicted Not Spam", "Predicted Spam"])
     st.dataframe(cm, use_container_width=True)
+# =====================  TAB 4: INSIGHTS  =====================
+with tab_insights:
+    st.subheader("Dataset & Model Insights")
+    df_all = load_dataset()
+
+    # ---- 1. Class distribution ----
+    st.markdown("#### 1. Class distribution")
+    counts = df_all["label"].value_counts()
+    total = len(df_all)
+    spam_pct = counts["Spam"] / total * 100
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Total messages", f"{total:,}")
+    k2.metric("Not Spam", f"{counts['Not Spam']:,}")
+    k3.metric("Spam", f"{counts['Spam']:,}")
+    st.bar_chart(counts)
+    st.caption(f"Only {spam_pct:.1f}% of the messages are spam, so the data is imbalanced. "
+               "That is why precision, recall and F1 matter more than accuracy alone.")
+
+    # ---- 2. Message length ----
+    st.markdown("#### 2. Message length: spam vs normal")
+    avg = df_all.groupby("label")[["chars", "words"]].mean().round(1)
+    avg.columns = ["Avg characters", "Avg words"]
+    st.dataframe(avg, use_container_width=True)
+
+    bins = list(range(0, 320, 20))
+    hist = pd.DataFrame(index=bins[:-1])
+    for lab in ["Not Spam", "Spam"]:
+        vals = df_all[df_all["label"] == lab]["chars"].clip(upper=299)
+        c, _ = np.histogram(vals, bins=bins)
+        hist[lab] = (c / c.sum() * 100).round(1)
+    hist.index.name = "Message length (characters)"
+    st.bar_chart(hist)
+    st.caption(f"Spam messages average {avg.loc['Spam', 'Avg characters']:.0f} characters, "
+               f"normal messages {avg.loc['Not Spam', 'Avg characters']:.0f}. "
+               "Y-axis shows the % of messages in each class; the last bucket includes longer messages.")
+
+    # ---- 3. Top words ----
+    st.markdown("#### 3. Most frequent words")
+    w1, w2 = st.columns(2)
+    w1.markdown("**🚫 Top spam words**")
+    show_words(top_words("Spam"), w1)
+    w2.markdown("**✅ Top normal-message words**")
+    show_words(top_words("Not Spam"), w2)
+
+    # ---- 4. Model performance ----
+    st.markdown("#### 4. Model performance")
+    left, right = st.columns(2)
+    if os.path.exists("confusion_matrix.png"):
+        left.image("confusion_matrix.png",
+                   caption="Confusion matrix - Naive Bayes (20% test set)")
+    right.markdown("**F1-score by model (%)**")
+    f1s = pd.Series({n: v["f1"] * 100 for n, v in metrics.items()}).round(2)
+    right.bar_chart(f1s)
+
+    with st.expander("See raw data sample"):
+        st.dataframe(df_all[["label", "text"]].sample(10, random_state=1),
+                     use_container_width=True, hide_index=True)
