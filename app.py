@@ -7,6 +7,7 @@ import streamlit as st
 from signals import analyze_signals
 import os
 from sklearn.feature_extraction.text import CountVectorizer, ENGLISH_STOP_WORDS
+from datetime import datetime
 
 st.set_page_config(page_title="SpamShield | NLP Spam Detector",
                    page_icon="🛡️", layout="centered")
@@ -81,6 +82,24 @@ def show_words(series, container):
         d, hide_index=True, use_container_width=True,
         column_config={"Count": st.column_config.ProgressColumn(
             "Count", min_value=0, max_value=int(d["Count"].max()), format="%d")})
+FEEDBACK_FILE = "feedback.csv"
+
+def give_feedback(is_correct):
+    last = st.session_state["last"]
+    predicted = "Spam" if last["prob"] >= 0.5 else "Not Spam"
+    opposite = "Not Spam" if predicted == "Spam" else "Spam"
+    row = pd.DataFrame([{
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "message": last["msg"],
+        "model": last["model"],
+        "predicted": predicted,
+        "spam_probability_%": round(last["prob"] * 100, 1),
+        "user_says_correct": is_correct,
+        "true_label": predicted if is_correct else opposite,
+    }])
+    row.to_csv(FEEDBACK_FILE, mode="a",
+               header=not os.path.exists(FEEDBACK_FILE), index=False)
+    st.session_state["last"]["feedback"] = is_correct
 st.markdown("""
 <style>
 #MainMenu, footer, .stDeployButton {visibility: hidden;}
@@ -149,55 +168,93 @@ with tab_detect:
 
     if st.button("🔍 Analyze Message", type="primary", use_container_width=True):
         if msg.strip() == "":
+            st.session_state.pop("last", None)
             st.warning("Please enter some text first.")
         else:
             cleaned = clean(msg)
-            vec = tfidf.transform([cleaned])
-            spam_prob = float(model.predict_proba(vec)[0][1])
-            is_spam = spam_prob >= 0.5
-            confidence = spam_prob if is_spam else 1 - spam_prob
+            prob = float(model.predict_proba(tfidf.transform([cleaned]))[0][1])
+            st.session_state["last"] = {"msg": msg, "cleaned": cleaned, "prob": prob,
+                                        "model": choice, "feedback": None}
 
-            if is_spam:
-                st.markdown(f"""<div class="result spam">
-                    <h3>🚫 Spam Detected</h3>
-                    <span>Model: {choice} | Confidence: {confidence*100:.1f}%</span></div>""",
-                            unsafe_allow_html=True)
-            else:
-                st.markdown(f"""<div class="result ham">
-                    <h3>✅ Looks Safe (Not Spam)</h3>
-                    <span>Model: {choice} | Confidence: {confidence*100:.1f}%</span></div>""",
-                            unsafe_allow_html=True)
+    last = st.session_state.get("last")
+    if last:
+        used_model = models[last["model"]]
+        vec = tfidf.transform([last["cleaned"]])
+        spam_prob = last["prob"]
+        is_spam = spam_prob >= 0.5
+        confidence = spam_prob if is_spam else 1 - spam_prob
 
-            st.write("")
-            st.caption("Spam probability")
-            st.progress(spam_prob)
-            sig_list = analyze_signals(msg)
-            hits = [s for s in sig_list if s["found"]]
-            st.markdown(f"**🚩 Suspicious signals: {len(hits)} of {len(sig_list)} detected**")
-            sc = st.columns(2)
-            for i, s in enumerate(sig_list):
-                icon = "🔴" if s["found"] else "🟢"
-                extra = f" - `{s['detail']}`" if s["found"] and s["detail"] else ""
-                sc[i % 2].markdown(f"{icon} **{s['name']}**{extra}")
-            st.caption("Signals are rule-based hints, separate from the ML model's prediction.")
+        preview = last["msg"][:70] + ("..." if len(last["msg"]) > 70 else "")
+        st.caption(f"Result for: {preview}")
 
-            words = spam_words(model, vec)
-            if words:
-                st.markdown("**Words that look like spam:**")
-                st.markdown("".join(f'<span class="chip">{w}</span>' for w in words),
-                            unsafe_allow_html=True)
+        if is_spam:
+            st.markdown(f"""<div class="result spam">
+                <h3>🚫 Spam Detected</h3>
+                <span>Model: {last['model']} | Confidence: {confidence*100:.1f}%</span></div>""",
+                        unsafe_allow_html=True)
+        else:
+            st.markdown(f"""<div class="result ham">
+                <h3>✅ Looks Safe (Not Spam)</h3>
+                <span>Model: {last['model']} | Confidence: {confidence*100:.1f}%</span></div>""",
+                        unsafe_allow_html=True)
 
-            with st.expander("🆚 Compare all models on this message"):
-                rows = []
-                for name, mdl in models.items():
-                    p = float(mdl.predict_proba(vec)[0][1])
-                    rows.append({"Model": name,
-                                 "Spam probability %": round(p * 100, 1),
-                                 "Prediction": "Spam" if p >= 0.5 else "Not Spam"})
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.write("")
+        st.caption("Spam probability")
+        st.progress(spam_prob)
 
-            with st.expander("See processed text"):
-                st.code(cleaned)
+        sig_list = analyze_signals(last["msg"])
+        hits = [s for s in sig_list if s["found"]]
+        st.markdown(f"**🚩 Suspicious signals: {len(hits)} of {len(sig_list)} detected**")
+        sc = st.columns(2)
+        for i, s in enumerate(sig_list):
+            icon = "🔴" if s["found"] else "🟢"
+            extra = f" - `{s['detail']}`" if s["found"] and s["detail"] else ""
+            sc[i % 2].markdown(f"{icon} **{s['name']}**{extra}")
+        st.caption("Signals are rule-based hints, separate from the ML model's prediction.")
+
+        words = spam_words(used_model, vec)
+        if words:
+            st.markdown("**Words that look like spam:**")
+            st.markdown("".join(f'<span class="chip">{w}</span>' for w in words),
+                        unsafe_allow_html=True)
+
+        with st.expander("🆚 Compare all models on this message"):
+            rows = []
+            for name, mdl in models.items():
+                p = float(mdl.predict_proba(vec)[0][1])
+                rows.append({"Model": name,
+                             "Spam probability %": round(p * 100, 1),
+                             "Prediction": "Spam" if p >= 0.5 else "Not Spam"})
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+        with st.expander("See processed text"):
+            st.code(last["cleaned"])
+
+        # ---------- Feedback ----------
+        st.divider()
+        if last["feedback"] is None:
+            st.markdown("**Was this prediction correct?**")
+            f1, f2 = st.columns(2)
+            f1.button("👍 Yes, correct", on_click=give_feedback, args=(True,),
+                      use_container_width=True)
+            f2.button("👎 No, it's wrong", on_click=give_feedback, args=(False,),
+                      use_container_width=True)
+        else:
+            st.success("Thanks! Your feedback was saved.")
+
+    with st.expander("📝 Feedback log"):
+        if os.path.exists(FEEDBACK_FILE):
+            fb = pd.read_csv(FEEDBACK_FILE)
+            wrong = int((fb["user_says_correct"] == False).sum())
+            q1, q2 = st.columns(2)
+            q1.metric("Feedback received", len(fb))
+            q2.metric("Marked wrong", wrong)
+            st.dataframe(fb, use_container_width=True, hide_index=True)
+            st.download_button("⬇️ Download feedback CSV",
+                               fb.to_csv(index=False).encode("utf-8"),
+                               file_name="feedback.csv", mime="text/csv")
+        else:
+            st.caption("No feedback yet. Analyze a message and use the buttons below the result.")
 
 # =====================  TAB 2: BATCH  =====================
 with tab_batch:
