@@ -120,7 +120,7 @@ st.markdown("""
 # ---------- Sidebar ----------
 with st.sidebar:
     st.header("⚙️ Settings")
-    choice = st.selectbox("Choose model", list(MODEL_FILES.keys()))
+    choice = st.selectbox("Choose model", list(MODEL_FILES.keys()), index=2)
     model = models[choice]
     m = metrics[choice]
 

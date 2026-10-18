@@ -16,12 +16,13 @@ SMS Spam Collection Dataset (5,572 messages) - Kaggle / UCI.
 
 ## Results
 
-| Model | Accuracy |
-|-------|----------|
-| Naive Bayes | 96.23% |
-| Logistic Regression | 96.05% |
-| Linear SVM | 98.48% |
-Naive Bayes is used in the final app. Confusion matrix:
+| Model | Accuracy | Precision | Recall | F1-score |
+|-------|----------|-----------|--------|----------|
+| Naive Bayes | 96.23% | 99.08% | 72.48% | 83.72% |
+| Logistic Regression | 96.05% | 99.07% | 71.14% | 82.81% |
+| Linear SVM | 98.39% | 97.12% | 90.60% | 93.75% |
+
+Linear SVM gives the best F1-score. The confusion matrix shown below is for Naive Bayes.
 
 ![Confusion Matrix](confusion_matrix.png)
 
