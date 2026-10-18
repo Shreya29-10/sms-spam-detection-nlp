@@ -1,7 +1,7 @@
 # SMS and Email Spam Detection using NLP
 
 Mini project for TE NLP (Sem-5), Dept. of AI & Data Science Engineering.
-
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://spamshield-shreya.streamlit.app/)
 ## Problem Statement
 Classify a given SMS/email text as Spam or Ham (not spam).
 
